@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Integrated 3D Character Viewer - Final Code</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; }
+        #ui-panel {
+            position: absolute; top: 10px; right: 10px; width: 250px;
+            background: rgba(40, 40, 40, 0.9); padding: 15px; border-radius: 8px;
+            border: 1px solid #555; color: white; font-family: sans-serif;
+        }
+        h3 { margin-top: 0; border-bottom: 1px solid #777; padding-bottom: 5px; font-size: 16px; }
+        button { width: 100%; padding: 8px; margin-bottom: 5px; background: #444; color: white; border: 1px solid #666; cursor: pointer; }
+        button:hover { background: #666; }
+        #status-log { margin-top: 10px; font-size: 12px; color: #bbb; height: 50px; overflow-y: auto; }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h3>캐릭터 조작 (GLTF 모델 필요)</h3>
+        
+        <div class="control-group">
+            <button id="mode-rotate">관절 회전 모드</button>
+            <button id="mode-translate">관절 이동 모드</button>
+        </div>
+        
+        <div class="control-group">
+            <button id="btn-toggle-skirt" data-mesh-name="Skirt">치마 토글 (Toggle)</button>
+            <button id="btn-toggle-bra" data-mesh-name="Bra">브라 토글 (Toggle)</button>
+            <button id="btn-toggle-shirt" data-mesh-name="Shirt">셔츠 토글 (Toggle)</button>
+        </div>
+        
+        <div id="status-log">Initializing...</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // ====================================================================
+        // 1. 씬 설정
+        // ====================================================================
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x333333);
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 1.5, 3);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        renderer.shadowMap.enabled = true;
+
+        // 조명 및 컨트롤
+        scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(5, 10, 5);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        const transformControl = new TransformControls(camera, renderer.domElement);
+        scene.add(transformControl);
+
+        transformControl.addEventListener('dragging-changed', (event) => {
+            controls.enabled = !event.value;
+        });
+
+        const raycaster = new THREE.Raycaster();
+        const pointer = new THREE.Vector2();
+        const log = (message) => document.getElementById('status-log').innerHTML = `<p>${new Date().toLocaleTimeString()} - ${message}</p>` + document.getElementById('status-log').innerHTML;
+
+        let characterModel = null; // GLTF 모델 변수
+
+        // ====================================================================
+        // 2. 텍스처 로딩 및 적용 로직 (12개 파일 통합)
+        // ====================================================================
+
+        const textureLoader = new THREE.TextureLoader();
+
+        function loadTexture(filename) {
+            // 모든 텍스처 파일은 'textures/' 폴더에 있어야 합니다.
+            return textureLoader.load(`./textures/${filename}`);
+        }
+        
+        // 12개 텍스처 파일 로드 맵 (가정 포함)
+        const textures = {
+            // --- RGB/Albedo 맵 (9개) ---
+            skinMap: loadTexture('RGB_8955ad67181047388f85b7c93652fdb9_Saber-skin.png'),
+            headMap: loadTexture('RGB_1c7f3770db6b4497aa1d867a12f52eb5_Saber-head.png'),
+            hairMap: loadTexture('RGB_ac5a277181ea489d8bc5f86b1f4bc83f_Saber-hair.png'),
+            braMap: loadTexture('RGB_508974b49fbe4f9fae53c57286bf393e_Saber-bra.png'),
+            skirtMap: loadTexture('RGB_ae81ccba31bd4354930b49d11f87b635_Saber-skirt.png'),
+            shirtMap: loadTexture('RGB_17ca332ddd444b21b6e473c2e3fbe7c9_Saber-shirt.png'),
+            shoesMap: loadTexture('RGB_3501c412dfdd429e810f3a05165af9a6_Saber-shoes.png'),
+            // 눈 색상 맵 (RGB_f6863cbcb6794860ba9eb66a32560247_Saber-eyes.png - 이전 파일)
+            eyeMap: loadTexture('RGB_f6863cbcb6794860ba9eb66a32560247_Saber-eyes.png'),
+            // 팬티 RGB 맵은 bra 맵과 동일하거나 별도 파일로 가정 (예시에서는 braMap 재사용)
+            
+            // --- Alpha 맵 (3개) ---
+            alphaEyes: loadTexture('R_c5175b892b7441a6b48d86859a8339a0_Saber-alpha-eyes.png'),
+            alphaBra: loadTexture('R_493953a92dff49f994963df298a5a269_Saber-alpha-bra.png'),
+            alphaPanties: loadTexture('R_37feff0cb52146e9b029fa9c0adb9080_Saber-alpha-panties.png'),
+            
+            // --- 기타 맵 (노멀, 러프니스 등. 파일명 가정) ---
+            normalBody: new THREE.Texture(), // Placeholders (Missing_File_1.png)
+        };
+        
+        /**
+         * 텍스처 및 알파 맵을 GLTF 모델의 해당 메쉬에 적용합니다.
+         */
+        function applyTexturesToModel(model) {
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    const name = child.name.toLowerCase();
+                    let material;
+
+                    // 텍스처 맵핑 로직
+                    if (name.includes('body') || name.includes('torso') || name.includes('skin')) {
+                        material = new THREE.MeshStandardMaterial({ map: textures.skinMap, normalMap: textures.normalBody, roughness: 0.8 });
+                    } else if (name.includes('head') || name.includes('face')) {
+                        material = new THREE.MeshStandardMaterial({ map: textures.headMap });
+                    } else if (name.includes('hair')) {
+                        material = new THREE.MeshStandardMaterial({ map: textures.hairMap, roughness: 0.5 });
+                    } else if (name.includes('eye')) {
+                        material = new THREE.MeshStandardMaterial({ 
+                            map: textures.eyeMap, 
+                            alphaMap: textures.alphaEyes, 
+                            transparent: true, alphaTest: 0.5 
+                        });
+                    } else if (name.includes('bra')) {
+                        material = new THREE.MeshStandardMaterial({ 
+                            map: textures.braMap, alphaMap: textures.alphaBra, transparent: true, alphaTest: 0.5 
+                        });
+                        child.userData.isCloth = true;
+                    } else if (name.includes('panties') || name.includes('underwear')) {
+                        material = new THREE.MeshStandardMaterial({ 
+                            map: textures.braMap, // RGB 맵 재사용
+                            alphaMap: textures.alphaPanties, transparent: true, alphaTest: 0.5 
+                        });
+                        child.userData.isCloth = true;
+                    } else if (name.includes('skirt')) {
+                        material = new THREE.MeshStandardMaterial({ map: textures.skirtMap });
+                        child.userData.isCloth = true;
+                    } else if (name.includes('shirt') || name.includes('top')) {
+                        material = new THREE.MeshStandardMaterial({ map: textures.shirtMap });
+                        child.userData.isCloth = true;
+                    } else if (name.includes('shoe') || name.includes('boot')) {
+                        material = new THREE.MeshStandardMaterial({ map: textures.shoesMap, metalness: 0.1 });
+                        child.userData.isCloth = true;
+                    }
+
+                    if (material) {
+                        child.material = material;
+                        child.castShadow = true;
+                    }
+                }
+            });
+            log("12-File Texture Application Successful.");
+        }
+
+        // ====================================================================
+        // 3. GLTF 모델 로딩
+        // ====================================================================
+
+        const loader = new GLTFLoader();
+        log("Loading character model (models/character_base.glb)...");
+        
+        loader.load(
+            '/models/character_base.glb', 
+            (gltf) => {
+                characterModel = gltf.scene;
+                scene.add(characterModel);
+                characterModel.position.y = 0; 
+                
+                applyTexturesToModel(characterModel); 
+                log("Model loaded successfully. Click a joint to pose.");
+            },
+            (xhr) => {
+                log(`Loading: ${Math.round(xhr.loaded / xhr.total * 100)}%`);
+            },
+            (error) => {
+                log(`🔴 ERROR: Could not load model. Check console for details.`);
+                console.error('모델 로드 중 오류 발생:', error);
+            }
+        );
+
+        // ====================================================================
+        // 4. 상호작용 및 UI 로직
+        // ====================================================================
+
+        // 관절 선택 로직 (Raycasting)
+        window.addEventListener('mousedown', (event) => {
+            if (!characterModel || event.target.closest('#ui-panel')) return;
+
+            pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(pointer, camera);
+            const intersects = raycaster.intersectObjects(characterModel.children, true); 
+
+            if (intersects.length > 0) {
+                let selectedObject = intersects[0].object;
+                
+                // Bone이나 관절 그룹을 찾아 부착
+                while(selectedObject && selectedObject.type !== 'Bone' && selectedObject !== characterModel) {
+                    selectedObject = selectedObject.parent;
+                }
+                
+                if (selectedObject && (selectedObject.type === 'Bone' || selectedObject.isMesh)) {
+                    transformControl.attach(selectedObject);
+                    log(`Joint/Mesh Selected: ${selectedObject.name}`);
+                }
+            } else {
+                transformControl.detach();
+            }
+        });
+
+        // UI 모드 버튼 및 의상 토글 로직
+        document.getElementById('mode-rotate').addEventListener('click', () => transformControl.setMode('rotate'));
+        document.getElementById('mode-translate').addEventListener('click', () => transformControl.setMode('translate'));
+
+        document.querySelectorAll('[data-mesh-name]').forEach(button => {
+            button.addEventListener('click', (e) => {
+                if (!characterModel) return;
+                const meshName = e.currentTarget.getAttribute('data-mesh-name').toLowerCase();
+                
+                characterModel.traverse((child) => {
+                    if (child.isMesh && child.name.toLowerCase().includes(meshName)) {
+                        child.visible = !child.visible;
+                        log(`${meshName.toUpperCase()} toggled: ${child.visible ? 'ON' : 'OFF'}`);
+                    }
+                });
+            });
+        });
+
+        // 5. 애니메이션 루프 및 리사이즈
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
